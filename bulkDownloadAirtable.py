@@ -6,16 +6,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-base_id = os.getenv("BASE_ID")
-table_id = os.getenv("TABLE_ID")
-airtable_token = os.getenv("AIRTABLE_TOKEN")
+BASE_ID = os.getenv("BASE_ID")
+TABLE_ID = os.getenv("TABLE_ID")
+AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 
 # Verify that all variables are loaded
-if not all([base_id, table_id, airtable_token]):
+if not all([BASE_ID, TABLE_ID, AIRTABLE_TOKEN]):
     raise ValueError("One or more environment variables are missing.")
 
 # Airtable API setup
-headers = {"Authorization": f"Bearer {airtable_token}"}
+headers = {"Authorization": f"Bearer {AIRTABLE_TOKEN}"}
 
 def fetch_records_from_airtable(view_names):
     """
@@ -27,7 +27,7 @@ def fetch_records_from_airtable(view_names):
         run = True
         while run:
             response = requests.get(
-                f"https://api.airtable.com/v0/{base_id}/{table_id}",
+                f"https://api.airtable.com/v0/{BASE_ID}/{TABLE_ID}",
                 params=params,
                 headers=headers
             )
@@ -106,7 +106,7 @@ def main():
     # Options
     desired_file_types = []  # e.g., ["application/pdf"], or empty list for all types
     desired_file_extensions = []  # e.g., ["pdf"], or empty list for all extensions
-    desired_view_names = ["test"]  # e.g., ["MyViewName"], or empty list for all records
+    desired_view_names = [""]  # e.g., ["MyViewName"], or empty list for all records
     organize_by_directory = True  # Set to True to organize files into folders based on file extension
     output_directory = os.path.expanduser("~/Desktop/Airtable Downloads")  # Specify the output directory
 
