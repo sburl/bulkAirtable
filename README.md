@@ -108,4 +108,4 @@ If you'd like to contribute to improving this script, feel free to open a pull r
 
 ## License
 
-This project is licensed under the MIT License. 
+This project is licensed under the MIT License.

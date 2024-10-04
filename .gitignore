@@ -1,2 +1,6 @@
 # .gitignore
+<<<<<<< HEAD
 .env
+=======
+.env
+>>>>>>> origin/main
