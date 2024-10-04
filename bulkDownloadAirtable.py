@@ -105,13 +105,13 @@ def main():
     """
     # Options
     desired_file_types = []  # e.g., ["application/pdf"], or empty list for all types
-    desired_file_extensions = [""]  # e.g., ["pdf"], or empty list for all extensions
-    desired_view_names = [""]  # e.g., ["MyViewName"], or empty list for all records
+    desired_file_extensions = []  # e.g., ["pdf"], or empty list for all extensions
+    desired_view_names = ["test"]  # e.g., ["MyViewName"], or empty list for all records
     organize_by_directory = True  # Set to True to organize files into folders based on file extension
     output_directory = os.path.expanduser("~/Desktop/Airtable Downloads")  # Specify the output directory
 
     # Prompt user to specify attachment fields
-    attachment_fields_input = [""]  # This is a list with one element
+    attachment_fields_input = [""]  # Specify where your attachment fields are located in your Airtable table
     attachment_fields_string = ",".join(attachment_fields_input)  # Convert the list to a comma-separated string
     attachment_field_names = [field.strip() for field in attachment_fields_string.split(',') if field.strip()]
 

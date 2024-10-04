@@ -1,6 +1,3 @@
 # .gitignore
-<<<<<<< HEAD
 .env
-=======
-.env
->>>>>>> origin/main
+.DS_Store
