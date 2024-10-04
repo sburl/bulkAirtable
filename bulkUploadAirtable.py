@@ -10,9 +10,13 @@ load_dotenv()
 
 # Configuration
 base_id = os.getenv("BASE_ID")
-table_id = os.getenv("TABLE_ID")
-api_key = os.getenv("API_KEY")
+table_id_or_name = os.getenv("TABLE_ID_OR_NAME")
+airtable_token = os.getenv("AIRTABLE_TOKEN")
 view_name = os.getenv("VIEW_NAME", "Grid view")
+
+# Verify that all variables are loaded
+if not all([base_id, table_id_or_name, airtable_token]):
+    raise ValueError("One or more environment variables are missing.")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,16 +26,16 @@ def get_table_schema():
     Get the table schema to understand the fields that need to be populated.
     """
     url = f"https://api.airtable.com/v0/meta/bases/{base_id}/tables"
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = {"Authorization": f"Bearer {airtable_token}"}
     retries = 3
     for attempt in range(retries):
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
             tables = response.json().get("tables", [])
             for table in tables:
-                if table["id"] == table_id or table["name"] == table_id:
-                    return table["fields"]
-            return []
+                if table["id"] == table_id_or_name or table["name"] == table_id_or_name:
+                    return table
+            return None
         else:
             logging.error(f"Error fetching table schema (attempt {attempt + 1}): {response.json()}")
             if attempt < retries - 1:
@@ -39,21 +43,52 @@ def get_table_schema():
             else:
                 raise Exception(f"Failed to fetch table schema after {retries} attempts.")
 
-def upload_file_record(file_path, default_fields):
+def upload_file_record(file_path, default_fields, attachment_field_names):
     """
     Upload a file as a new record with the default fields filled in.
     """
     filename = os.path.basename(file_path)
-    url = f"https://api.airtable.com/v0/{base_id}/{table_id}"
+    url = f"https://api.airtable.com/v0/{base_id}/{table_id_or_name}"
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {airtable_token}",
         "Content-Type": "application/json"
     }
+
+    # Airtable requires a publicly accessible URL for attachments
+    # Here, we simulate this by uploading the file to Airtable's attachment upload endpoint
+    # Note: As of 2023-10, Airtable allows direct file uploads via the API
+
+    # Upload the file to Airtable's temporary attachment endpoint
+    attachment_upload_url = 'https://api.airtable.com/v0/{baseId}/attachments'
+    with open(file_path, 'rb') as file_content:
+        files = {'file': (filename, file_content)}
+        upload_headers = {
+            "Authorization": f"Bearer {airtable_token}"
+        }
+        upload_response = requests.post(
+            attachment_upload_url.replace('{baseId}', base_id),
+            headers=upload_headers,
+            files=files
+        )
+
+    if upload_response.status_code != 200:
+        logging.error(f"Error uploading attachment {filename}: {upload_response.json()}")
+        return
+
+    attachment_data = upload_response.json()
+    attachment_url = attachment_data.get('url')
+    if not attachment_url:
+        logging.error(f"No URL returned for attachment {filename}")
+        return
+
     data = {
-        "fields": default_fields
+        "fields": default_fields.copy()
     }
-    # Add attachment to the data
-    data["fields"]["Attachment"] = [{"url": f"file://{os.path.abspath(file_path)}"}]
+    # Add attachment to the specified attachment fields
+    attachment = [{"url": attachment_url, "filename": filename}]
+    for field_name in attachment_field_names:
+        data["fields"][field_name] = attachment
+
     retries = 3
     for attempt in range(retries):
         response = requests.post(url, headers=headers, data=json.dumps(data))
@@ -73,19 +108,37 @@ def main():
     """
     # Get schema to identify default fields
     try:
-        fields = get_table_schema()
+        table_schema = get_table_schema()
     except Exception as e:
         logging.error(str(e))
         return
-    
-    default_fields = {field["name"]: None for field in fields}
-    
+
+    if not table_schema:
+        logging.error("Table schema not found.")
+        return
+
+    fields = table_schema.get("fields", [])
+    field_names = [field["name"] for field in fields]
+    default_fields = {field_name: None for field_name in field_names}
+
     # Allow user to modify default fields if desired
+    print("Specify default values for fields (leave blank to skip):")
     for key in default_fields.keys():
-        value = input(f"Enter default value for '{key}' (leave blank for None): ")
+        value = input(f"Enter default value for '{key}': ")
         if value:
             default_fields[key] = value
-    
+        else:
+            default_fields[key] = None
+
+    # Ask the user to specify the attachment fields
+    print("\nAvailable fields:", ', '.join(field_names))
+    attachment_fields_input = input("Enter the names of the attachment fields (comma-separated): ")
+    attachment_field_names = [field.strip() for field in attachment_fields_input.split(',') if field.strip() in field_names]
+
+    if not attachment_field_names:
+        logging.error("No valid attachment fields specified.")
+        return
+
     # Get folder path from user
     folder_path = input("Enter the path of the folder containing files to upload: ")
     if not os.path.isdir(folder_path):
@@ -95,12 +148,11 @@ def main():
     # Upload each file in the folder, including subdirectories
     for root, dirs, files in os.walk(folder_path):
         for filename in files:
-            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.pdf', '.docx', '.xlsx', '.txt')):
-                file_path = os.path.join(root, filename)
-                try:
-                    upload_file_record(file_path, default_fields)
-                except Exception as e:
-                    logging.error(f"Unexpected error uploading {filename}: {str(e)}")
+            file_path = os.path.join(root, filename)
+            try:
+                upload_file_record(file_path, default_fields, attachment_field_names)
+            except Exception as e:
+                logging.error(f"Unexpected error uploading {filename}: {str(e)}")
 
 if __name__ == "__main__":
     main()

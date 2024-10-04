@@ -25,29 +25,84 @@ pip install requests python-dotenv
 
 ## Setup
 
-1. **Clone the Repository**
+### Creating and Permissioning an Airtable API Key
 
-   ```sh
-   git clone https://github.com/sburl/bulkAirtable.git
-   cd bulkAirtable
-   ```
+1. **Log into Airtable**
+   - Go to [https://airtable.com/](https://airtable.com/) and log in to your account.
 
-2. **Environment Variables**
-   Create a `.env` file in the project directory with the following variables:
+2. **Navigate to Builder Hub**
+   - Click on your profile picture in the top-right corner and select **Builder Hub**.
 
-   ```env
-   BASE_ID=your_base_id
-   TABLE_ID=your_table_id
-   API_KEY=your_airtable_api_key
-   ```
+3. **Create a Personal Access Token**
+   - Click on **Create token** to create a new personal access token.
+   - Name your token appropriately (e.g., "Airtable Bulk Access Token").
 
-   Replace `your_base_id`, `your_table_id`, and `your_airtable_api_key` with your Airtable information.
+4. **Set Permissions**
+   - Add the following permissions to the token:
+     - **data.records:read**: See the data in records.
+     - **data.records:write**: Create, edit, and delete records.
+     - **schema.bases:read**: See the structure of a base, like table names or field types.
+
+5. **Specify Base Access**
+   - You must specify which bases the token has access to. Select the bases you want to use with this script.
+
+6. **Copy the Token**
+   - Once the token is created, copy it for later use.
+
+### Finding the Base ID
+
+1. **Open Your Airtable Base**
+   - Open your Airtable base in a web browser.
+
+2. **Access API Documentation**
+   - Click on the **Help** button in the top-right corner of the screen.
+   - Select **API documentation** from the dropdown menu.
+
+3. **Locate Base ID**
+   - A new page will open showing your API documentation. Look for the text that says "The ID of this base is" followed by a string starting with "app".
+   - This string starting with "app" is your Base ID.
+
+### Finding the Table ID
+
+1. **Check the URL**
+   - While viewing your base in a web browser, look at the URL in the address bar.
+   - The URL will contain a section that starts with "tbl" followed by a string of characters.
+   - This "tbl" section is your Table ID.
+
+### Alternative Method for Finding Base and Table ID
+
+1. **Open Your Desired Base and Table**
+   - Open your desired base and table in Airtable.
+
+2. **Look at the URL**
+   - The URL will have a format similar to:
+     ```
+     airtable.com/appXXXXXXXXXXXXXX/tblYYYYYYYYYYYYYY/viwZZZZZZZZZZZZZZ
+     ```
+   - In this URL:
+     - The section starting with "app" is your **Base ID**.
+     - The section starting with "tbl" is your **Table ID**.
+
+### Environment Variables
+
+Create a `.env` file in the project directory with the following variables:
+
+```env
+BASE_ID=your_base_id
+TABLE_ID=your_table_id
+AIRTABLE_TOKEN=your_airtable_api_key
+TABLE_ID_OR_NAME=your_table_id_or_name
+VIEW_NAME=your_view_name
+```
+
+Replace the placeholders with your Airtable information.
 
 ## Configuration
 
 - **Desired File Types**: Update the `desired_file_types` list in the script to specify which types of files you want to download (e.g., `application/pdf`, `image/jpeg`). Leave it empty to download all file types.
 - **Desired File Extensions**: Update the `desired_file_extensions` list to specify file extensions you want to download (e.g., `pdf`, `jpg`). Leave it empty to download all extensions.
 - **Desired View Names**: Update the `desired_view_names` list with the views you want to download attachments from (e.g., `View1`, `View2`). Leave it empty to download records from all views.
+- **Attachment Fields**: Update the `attachment_field_names` variable to specify which attachment fields to use for both upload and download operations. This can be set in the `.env` file with a comma-separated list of field names.
 - **Organize by Directory**: Set the `organize_by_directory` variable to `True` if you want to organize downloaded files into folders based on their file extension.
 
 ## How to Use
@@ -76,7 +131,10 @@ pip install requests python-dotenv
 2. **Specify Default Values**
    The script will prompt you to provide default values for fields in your Airtable table. Leave fields blank if no default value is needed.
 
-3. **Select Folder**
+3. **Specify Attachment Fields**
+   The script will also prompt you to specify which fields in your table should hold attachments. You can select one or more fields for attachments.
+
+4. **Select Folder**
    You will be prompted to enter the path of the folder containing the files you wish to upload. The script will recursively upload all valid files in the selected folder and subfolders.
 
 ## Example
