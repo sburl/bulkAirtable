@@ -4,18 +4,28 @@ import json
 import logging
 from dotenv import load_dotenv
 from time import sleep
+import boto3
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Configuration
-base_id = os.getenv("BASE_ID")
-table_id_or_name = os.getenv("TABLE_ID_OR_NAME")
-airtable_token = os.getenv("AIRTABLE_TOKEN")
-view_name = os.getenv("VIEW_NAME", "Grid view")
+BASE_ID = os.getenv("BASE_ID")
+TABLE_ID = os.getenv("TABLE_ID_OR_NAME")
+AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
+
+AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
+AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+
+gdrive_credentials_path = os.getenv("GDRIVE_CREDENTIALS_PATH")
+use_storage = os.getenv("USE_STORAGE", "s3").lower()  # Options: 's3' or 'gdrive'
 
 # Verify that all variables are loaded
-if not all([base_id, table_id_or_name, airtable_token]):
+if not all([BASE_ID, TABLE_ID, AIRTABLE_TOKEN]):
     raise ValueError("One or more environment variables are missing.")
 
 # Setup logging
@@ -25,15 +35,15 @@ def get_table_schema():
     """
     Get the table schema to understand the fields that need to be populated.
     """
-    url = f"https://api.airtable.com/v0/meta/bases/{base_id}/tables"
-    headers = {"Authorization": f"Bearer {airtable_token}"}
+    url = f"https://api.airtable.com/v0/meta/bases/{BASE_ID}/tables"
+    headers = {"Authorization": f"Bearer {AIRTABLE_TOKEN}"}
     retries = 3
     for attempt in range(retries):
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
             tables = response.json().get("tables", [])
             for table in tables:
-                if table["id"] == table_id_or_name or table["name"] == table_id_or_name:
+                if table["id"] == TABLE_ID or table["name"] == TABLE_ID:
                     return table
             return None
         else:
@@ -43,42 +53,60 @@ def get_table_schema():
             else:
                 raise Exception(f"Failed to fetch table schema after {retries} attempts.")
 
+def upload_to_s3(file_path):
+    """
+    Upload file to AWS S3 and return the file URL.
+    """
+    s3 = boto3.client('s3', aws_access_key_id=aws_access_key, aws_secret_access_key=aws_secret_key)
+    try:
+        s3.upload_file(file_path, s3_bucket_name, os.path.basename(file_path))
+        url = f"https://{s3_bucket_name}.s3.amazonaws.com/{os.path.basename(file_path)}"
+        logging.info(f"Uploaded {file_path} to S3 successfully.")
+        return url
+    except Exception as e:
+        logging.error(f"Error uploading {file_path} to S3: {str(e)}")
+        return None
+
+def upload_to_gdrive(file_path):
+    """
+    Upload file to Google Drive and return the file URL.
+    """
+    creds = service_account.Credentials.from_service_account_file(gdrive_credentials_path, scopes=["https://www.googleapis.com/auth/drive.file"])
+    drive_service = build('drive', 'v3', credentials=creds)
+    file_metadata = {'name': os.path.basename(file_path)}
+    media = MediaFileUpload(file_path, resumable=True)
+    try:
+        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        file_id = file.get('id')
+        url = f"https://drive.google.com/uc?id={file_id}"
+        logging.info(f"Uploaded {file_path} to Google Drive successfully.")
+        return url
+    except Exception as e:
+        logging.error(f"Error uploading {file_path} to Google Drive: {str(e)}")
+        return None
+
 def upload_file_record(file_path, default_fields, attachment_field_names):
     """
     Upload a file as a new record with the default fields filled in.
     """
     filename = os.path.basename(file_path)
-    url = f"https://api.airtable.com/v0/{base_id}/{table_id_or_name}"
+    url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE_ID}"
     headers = {
-        "Authorization": f"Bearer {airtable_token}",
+        "Authorization": f"Bearer {AIRTABLE_TOKEN}",
         "Content-Type": "application/json"
     }
 
-    # Airtable requires a publicly accessible URL for attachments
-    # Here, we simulate this by uploading the file to Airtable's attachment upload endpoint
-    # Note: As of 2023-10, Airtable allows direct file uploads via the API
-
-    # Upload the file to Airtable's temporary attachment endpoint
-    attachment_upload_url = 'https://api.airtable.com/v0/{baseId}/attachments'
-    with open(file_path, 'rb') as file_content:
-        files = {'file': (filename, file_content)}
-        upload_headers = {
-            "Authorization": f"Bearer {airtable_token}"
-        }
-        upload_response = requests.post(
-            attachment_upload_url.replace('{baseId}', base_id),
-            headers=upload_headers,
-            files=files
-        )
-
-    if upload_response.status_code != 200:
-        logging.error(f"Error uploading attachment {filename}: {upload_response.json()}")
+    # Upload the file to S3 or Google Drive to get a publicly accessible URL
+    if use_storage == 's3':
+        attachment_url = upload_to_s3(file_path)
+    elif use_storage == 'gdrive':
+        attachment_url = upload_to_gdrive(file_path)
+    else:
+        logging.error(f"Invalid storage option specified: {use_storage}")
         return
 
-    attachment_data = upload_response.json()
-    attachment_url = attachment_data.get('url')
     if not attachment_url:
-        logging.error(f"No URL returned for attachment {filename}")
+        logging.error(f"Failed to upload {filename} to {use_storage}.")
         return
 
     data = {
@@ -106,6 +134,18 @@ def main():
     """
     Main function to upload files from a folder to Airtable.
     """
+
+    # Specify folder path
+    folder_path = "/Users/sqb/Desktop/test" #/path/to/your/folder
+    if not os.path.isdir(folder_path):
+        logging.error("Invalid folder path.")
+        return
+
+    # Specify attachment fields
+    attachment_fields_input = [""]  # Specify where your attachment fields are located in your Airtable table
+    attachment_fields_string = ",".join(attachment_fields_input)  # Convert the list to a comma-separated string
+    attachment_field_names = [field.strip() for field in attachment_fields_string.split(',') if field.strip()]
+
     # Get schema to identify default fields
     try:
         table_schema = get_table_schema()
@@ -130,19 +170,8 @@ def main():
         else:
             default_fields[key] = None
 
-    # Ask the user to specify the attachment fields
-    print("\nAvailable fields:", ', '.join(field_names))
-    attachment_fields_input = input("Enter the names of the attachment fields (comma-separated): ")
-    attachment_field_names = [field.strip() for field in attachment_fields_input.split(',') if field.strip() in field_names]
-
     if not attachment_field_names:
         logging.error("No valid attachment fields specified.")
-        return
-
-    # Get folder path from user
-    folder_path = input("Enter the path of the folder containing files to upload: ")
-    if not os.path.isdir(folder_path):
-        logging.error("Invalid folder path.")
         return
 
     # Upload each file in the folder, including subdirectories
