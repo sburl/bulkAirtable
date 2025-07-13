@@ -1,6 +1,7 @@
 import requests
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -20,26 +21,44 @@ headers = {"Authorization": f"Bearer {AIRTABLE_TOKEN}"}
 def fetch_records_from_airtable(view_names):
     """
     Fetch records from Airtable based on the specified view names.
+    Improved error handling: print raw response if not JSON, avoid TypeError.
     """
     airtable_records = []
     for view_name in view_names if view_names else [None]:
         params = {"view": view_name} if view_name else {}
         run = True
         while run:
+            url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE_ID}"
+            print(f"Calling URL: {url}")
+            print(f"With params: {params}")
             response = requests.get(
-                f"https://api.airtable.com/v0/{BASE_ID}/{TABLE_ID}",
+                url,
                 params=params,
                 headers=headers
             )
-            airtable_response = response.json()
+            print(f"Response status code: {response.status_code}")
+            try:
+                airtable_response = response.json()
+            except Exception as e:
+                print("Error: Response is not valid JSON.")
+                print("Raw response:", response.text)
+                break
 
             # Handle potential errors in the response
-            if 'error' in airtable_response:
-                print(f"Error fetching records: {airtable_response['error']['message']}")
+            if isinstance(airtable_response, dict) and 'error' in airtable_response:
+                error_val = airtable_response['error']
+                if isinstance(error_val, dict):
+                    print(f"Error fetching records: {error_val.get('message', error_val)}")
+                else:
+                    print(f"Error fetching records: {error_val}")
+                break
+            elif not isinstance(airtable_response, dict):
+                print("Unexpected response type:", type(airtable_response))
+                print("Raw response:", airtable_response)
                 break
 
             airtable_records += airtable_response.get('records', [])
-            offset = airtable_response.get('offset')
+            offset = airtable_response.get('offset') if isinstance(airtable_response, dict) else None
             if offset:
                 params['offset'] = offset
             else:
@@ -47,9 +66,27 @@ def fetch_records_from_airtable(view_names):
 
     return airtable_records
 
-def process_records(airtable_records, desired_file_types, desired_file_extensions, attachment_field_names, organize_by_directory, output_directory):
+def rename_file(old_path, new_filename):
+    """
+    Rename a file, handling potential filename conflicts.
+    """
+    directory = os.path.dirname(old_path)
+    new_path = os.path.join(directory, new_filename)
+    
+    # Handle filename conflicts
+    counter = 1
+    while os.path.exists(new_path):
+        name, ext = os.path.splitext(new_filename)
+        new_path = os.path.join(directory, f"{name} ({counter}){ext}")
+        counter += 1
+    
+    os.rename(old_path, new_path)
+    return new_path
+
+def process_records(airtable_records, desired_file_types, desired_file_extensions, attachment_field_names, organize_by_directory, output_directory, first, second):
     """
     Process records and download attachments based on specified file types and extensions.
+    Rename files based on column information.
     """
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
@@ -60,6 +97,10 @@ def process_records(airtable_records, desired_file_types, desired_file_extension
         attachments = []
         for field_name in attachment_field_names:
             attachments.extend(fields.get(field_name, []))
+
+        # Get file name information
+        first_value = fields.get(first, '')
+        second_value = fields.get(second, '')
 
         for attachment in attachments:
             attachment_url = attachment.get('url')
@@ -74,7 +115,6 @@ def process_records(airtable_records, desired_file_types, desired_file_extension
             if type_match and extension_match:
                 # Determine the download path
                 if organize_by_directory:
-                    # Create directories based on file extension
                     folder_name = filename_extension.upper()
                     target_directory = os.path.join(output_directory, folder_name)
                     os.makedirs(target_directory, exist_ok=True)
@@ -84,6 +124,23 @@ def process_records(airtable_records, desired_file_types, desired_file_extension
 
                 # Download the file
                 download_attachment(attachment_url, download_path)
+
+                # Rename the file only if fields are provided
+                if first and second:
+                    if first_value and second_value:
+                        new_filename = f"{first_value} || {second_value}.{filename_extension}"
+                    elif first_value:
+                        new_filename = f"{first_value}.{filename_extension}"
+                    else:
+                        new_filename = attachment_filename
+                    
+                    if new_filename != attachment_filename:
+                        new_path = rename_file(download_path, new_filename)
+                        print(f"Renamed to: {os.path.basename(new_path)}")
+                    else:
+                        print(f"File name unchanged: {attachment_filename}")
+                else:
+                    print(f"File name unchanged: {attachment_filename}")
             else:
                 print(f"Skipping {attachment_filename} due to file type {attachment_type} or extension {filename_extension}")
 
@@ -99,6 +156,33 @@ def download_attachment(attachment_url, download_path):
     else:
         print(f"Failed to download {download_path}: {response.status_code}")
 
+def ensure_valid_directory(path):
+    """
+    Ensure the given path is a valid directory.
+    If it doesn't exist, create it.
+    If it's not writable, try to find an alternative.
+    """
+    try:
+        if not os.path.exists(path):
+            os.makedirs(path)
+        elif not os.path.isdir(path):
+            raise NotADirectoryError(f"{path} is not a directory")
+        
+        # Check if the directory is writable
+        test_file = os.path.join(path, 'test_write.tmp')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        
+        return path
+    except PermissionError:
+        print(f"Warning: No write permission for {path}. Trying alternative location.")
+        alt_path = os.path.join(os.path.expanduser('~'), 'Downloads', 'Airtable Downloads')
+        return ensure_valid_directory(alt_path)
+    except Exception as e:
+        print(f"Error creating directory {path}: {str(e)}")
+        return None
+
 def main():
     """
     Main function to orchestrate the download of attachments from Airtable.
@@ -106,14 +190,28 @@ def main():
     # Options
     desired_file_types = []  # e.g., ["application/pdf"], or empty list for all types
     desired_file_extensions = []  # e.g., ["pdf"], or empty list for all extensions
-    desired_view_names = [""]  # e.g., ["MyViewName"], or empty list for all records
+    desired_view_names = []  # e.g., ["MyViewName"], or empty list for all records
     organize_by_directory = True  # Set to True to organize files into folders based on file extension
-    output_directory = os.path.expanduser("~/Desktop/Airtable Downloads")  # Specify the output directory
+    
+    # Get current date in yy.mm.dd format
+    current_date = datetime.now().strftime("%y.%m.%d")
+    
+    # Append current date to the download folder name
+    base_output_directory = os.path.expanduser(f"~/Desktop/{current_date} Airtable Downloads")
+    
+    # Ensure the output directory is valid
+    output_directory = ensure_valid_directory(base_output_directory)
+    
+    if not output_directory:
+        print("ERROR - Could not create a valid output directory. Exiting.")
+        return
 
-    # Prompt user to specify attachment fields
-    attachment_fields_input = [""]  # Specify where your attachment fields are located in your Airtable table
-    attachment_fields_string = ",".join(attachment_fields_input)  # Convert the list to a comma-separated string
-    attachment_field_names = [field.strip() for field in attachment_fields_string.split(',') if field.strip()]
+    # Specify attachment fields
+    attachment_field_names = ["File"]  # Specify where your attachment fields are located in your Airtable table
+
+    # Specify fields for renaming files
+    first_field = "Title"  # Enter the name of the Airtable column for the first part of the name (e.g., title)
+    second_field = "Author"  # Enter the name of the Airtable column for the second part of the name (e.g., author)
 
     if not attachment_field_names:
         print("No attachment fields specified. Please specify attachment fields.")
@@ -123,7 +221,7 @@ def main():
     airtable_records = fetch_records_from_airtable(desired_view_names)
 
     # Process records and download attachments
-    process_records(airtable_records, desired_file_types, desired_file_extensions, attachment_field_names, organize_by_directory, output_directory)
+    process_records(airtable_records, desired_file_types, desired_file_extensions, attachment_field_names, organize_by_directory, output_directory, first_field, second_field)
 
 if __name__ == "__main__":
     main()
