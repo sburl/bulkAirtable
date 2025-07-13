@@ -18,6 +18,25 @@ if not all([BASE_ID, TABLE_ID, AIRTABLE_TOKEN]):
 # Airtable API setup
 headers = {"Authorization": f"Bearer {AIRTABLE_TOKEN}"}
 
+def fetch_base_name():
+    """
+    Fetch the base name from Airtable using the metadata API.
+    """
+    try:
+        response = requests.get(
+            f"https://api.airtable.com/v0/meta/bases/{BASE_ID}",
+            headers=headers
+        )
+        if response.status_code == 200:
+            base_data = response.json()
+            return base_data.get('name', 'Unknown Base')
+        else:
+            print(f"Warning: Could not fetch base name. Status code: {response.status_code}")
+            return 'Unknown Base'
+    except Exception as e:
+        print(f"Warning: Could not fetch base name: {str(e)}")
+        return 'Unknown Base'
+
 def fetch_records_from_airtable(view_names):
     """
     Fetch records from Airtable based on the specified view names.
@@ -196,8 +215,11 @@ def main():
     # Get current date in yy.mm.dd format
     current_date = datetime.now().strftime("%y.%m.%d")
     
-    # Append current date to the download folder name
-    base_output_directory = os.path.expanduser(f"~/Desktop/{current_date} Airtable Downloads")
+    # Fetch base name from Airtable
+    base_name = fetch_base_name()
+    
+    # Append current date and base name to the download folder name
+    base_output_directory = os.path.expanduser(f"~/Desktop/{current_date} Airtable {base_name} Downloads")
     
     # Ensure the output directory is valid
     output_directory = ensure_valid_directory(base_output_directory)
