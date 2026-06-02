@@ -182,27 +182,30 @@ class AirtableUploader:
         logger.info(f"Creating {len(records_to_create)} records in Airtable...")
         created_records = self.client.create_records_batch(records_to_create)
 
-        # Only clean up intermediate storage for files whose attachment Airtable
-        # actually confirmed in the create response. If creation failed (or a
-        # record came back without its attachment), keep the intermediate file
-        # so nothing is lost.
-        confirmed_filenames = set()
-        for record in created_records or []:
-            fields = record.get("fields", {}) if isinstance(record, dict) else {}
-            for field_name in attachment_field_names:
-                for attachment in fields.get(field_name, []) or []:
-                    name = attachment.get("filename") if isinstance(attachment, dict) else None
-                    if name:
-                        confirmed_filenames.add(name)
-
-        for file_path, _ in uploaded_attachments:
-            if os.path.basename(file_path) in confirmed_filenames:
-                self.storage.delete_file(file_path)
-            else:
-                logger.warning(
-                    f"Airtable did not confirm attachment for "
-                    f"{os.path.basename(file_path)}; keeping intermediate file."
-                )
+        # Clean up intermediate storage only when EVERY record was created.
+        # records_to_create is built 1:1 and in order from uploaded_attachments,
+        # and create_records_batch returns results in that same order, so on full
+        # success we can map record[i] -> file[i] positionally. Matching by
+        # filename instead would be unsafe: two files with the same basename in
+        # different folders could let an unconfirmed upload be deleted. On any
+        # partial failure we keep ALL intermediate files rather than risk that.
+        if len(created_records) == len(uploaded_attachments):
+            for (file_path, _), record in zip(uploaded_attachments, created_records):
+                fields = record.get("fields", {}) if isinstance(record, dict) else {}
+                has_attachment = any(fields.get(name) for name in attachment_field_names)
+                if has_attachment:
+                    self.storage.delete_file(file_path)
+                else:
+                    logger.warning(
+                        f"Airtable record for {os.path.basename(file_path)} has no "
+                        f"attachment; keeping intermediate file."
+                    )
+        else:
+            logger.warning(
+                f"Only {len(created_records)} of {len(uploaded_attachments)} records "
+                f"were created; keeping all intermediate files (cannot map records "
+                f"to files safely)."
+            )
 
 
 def main():
