@@ -1,5 +1,8 @@
 # Bulk Airtable
 
+**Created:** 2026-06-01-12-00
+**Last Updated:** 2026-06-01-12-00
+
 A simple, focused Python package for bulk uploading and downloading files with Airtable, using S3 or Google Drive as intermediate storage.
 
 ## Installation
