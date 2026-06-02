@@ -4,6 +4,7 @@ Module for uploading files to Airtable via intermediate storage (S3 or Google Dr
 
 import os
 import json
+import uuid
 import logging
 import requests
 from time import sleep, time
@@ -49,30 +50,41 @@ class S3Storage(StorageBackend):
             aws_secret_access_key=secret_key
         )
         self.bucket_name = bucket_name
+        # Map uploaded file_path -> unique S3 object key, so we delete exactly
+        # what we uploaded and never collide on basename.
+        self._keys = {}
 
     def upload_file(self, file_path: str) -> str:
         try:
             filename = os.path.basename(file_path)
-            self.s3.upload_file(file_path, self.bucket_name, filename)
+            # Unique object key: two files with the same basename in different
+            # folders must not collide on (and overwrite) the same S3 key.
+            key = f"{uuid.uuid4().hex}-{filename}"
+            self.s3.upload_file(file_path, self.bucket_name, key)
+            self._keys[file_path] = key
             # Presigned GET URL (1h) instead of a public URL: lets Airtable fetch
             # the attachment after the batch create without making the object
             # publicly readable (no public-bucket requirement / footgun).
             url = self.s3.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': self.bucket_name, 'Key': filename},
+                Params={'Bucket': self.bucket_name, 'Key': key},
                 ExpiresIn=3600,
             )
-            logger.info(f"Uploaded to S3 (presigned, 1h): {filename}")
+            logger.info(f"Uploaded to S3 (presigned, 1h): {key}")
             return url
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
             return None
 
     def delete_file(self, file_path: str):
+        key = self._keys.get(file_path)
+        if not key:
+            logger.warning(f"No S3 key tracked for {file_path}; skipping delete.")
+            return
         try:
-            filename = os.path.basename(file_path)
-            self.s3.delete_object(Bucket=self.bucket_name, Key=filename)
-            logger.info(f"Deleted from S3: {filename}")
+            self.s3.delete_object(Bucket=self.bucket_name, Key=key)
+            self._keys.pop(file_path, None)
+            logger.info(f"Deleted from S3: {key}")
         except Exception as e:
             logger.error(f"S3 Delete Error: {e}")
 
