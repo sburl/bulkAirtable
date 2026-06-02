@@ -50,9 +50,12 @@ class S3Storage(StorageBackend):
             aws_secret_access_key=secret_key
         )
         self.bucket_name = bucket_name
-        # Map uploaded file_path -> unique S3 object key, so we delete exactly
-        # what we uploaded and never collide on basename.
-        self._keys = {}
+        # List of (file_path, s3_key) pairs. Using a list (rather than a dict
+        # keyed by file_path) means that if the same file_path is uploaded more
+        # than once (e.g. a retry loop) all resulting S3 objects are tracked and
+        # can be cleaned up — a dict would silently overwrite the first entry
+        # and orphan the first object.
+        self._uploads: list[tuple[str, str]] = []
 
     def upload_file(self, file_path: str) -> str:
         try:
@@ -61,32 +64,40 @@ class S3Storage(StorageBackend):
             # folders must not collide on (and overwrite) the same S3 key.
             key = f"{uuid.uuid4().hex}-{filename}"
             self.s3.upload_file(file_path, self.bucket_name, key)
-            self._keys[file_path] = key
-            # Presigned GET URL (1h) instead of a public URL: lets Airtable fetch
-            # the attachment after the batch create without making the object
-            # publicly readable (no public-bucket requirement / footgun).
+            # Use (file_path, key) as the tracking key so that retrying the
+            # same file_path in the same session doesn't silently overwrite the
+            # first upload's key and orphan its S3 object.
+            self._uploads.append((file_path, key))
+            # Presigned GET URL (12h) instead of a public URL: lets Airtable
+            # fetch the attachment after the batch create without making the
+            # object publicly readable (no public-bucket requirement / footgun).
+            # 1h was too short for large batches or slow Airtable ingestion
+            # pipelines; 12h is the conventional safe minimum.
             url = self.s3.generate_presigned_url(
                 'get_object',
                 Params={'Bucket': self.bucket_name, 'Key': key},
-                ExpiresIn=3600,
+                ExpiresIn=43200,
             )
-            logger.info(f"Uploaded to S3 (presigned, 1h): {key}")
+            logger.info(f"Uploaded to S3 (presigned, 12h): {key}")
             return url
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
             return None
 
     def delete_file(self, file_path: str):
-        key = self._keys.get(file_path)
-        if not key:
+        # Find all S3 keys associated with this file_path (there may be more
+        # than one if the path was uploaded multiple times in the same session).
+        matching = [(fp, k) for fp, k in self._uploads if fp == file_path]
+        if not matching:
             logger.warning(f"No S3 key tracked for {file_path}; skipping delete.")
             return
-        try:
-            self.s3.delete_object(Bucket=self.bucket_name, Key=key)
-            self._keys.pop(file_path, None)
-            logger.info(f"Deleted from S3: {key}")
-        except Exception as e:
-            logger.error(f"S3 Delete Error: {e}")
+        for fp, key in matching:
+            try:
+                self.s3.delete_object(Bucket=self.bucket_name, Key=key)
+                self._uploads.remove((fp, key))
+                logger.info(f"Deleted from S3: {key}")
+            except Exception as e:
+                logger.error(f"S3 Delete Error: {e}")
 
 
 class GDriveStorage(StorageBackend):
@@ -194,24 +205,25 @@ class AirtableUploader:
         logger.info(f"Creating {len(records_to_create)} records in Airtable...")
         created_records = self.client.create_records_batch(records_to_create)
 
-        # Clean up intermediate storage only when EVERY record was created.
-        # records_to_create is built 1:1 and in order from uploaded_attachments,
-        # and create_records_batch returns results in that same order, so on full
-        # success we can map record[i] -> file[i] positionally. Matching by
-        # filename instead would be unsafe: two files with the same basename in
-        # different folders could let an unconfirmed upload be deleted. On any
-        # partial failure we keep ALL intermediate files rather than risk that.
+        # Clean up intermediate storage only when EVERY record was confirmed
+        # created. records_to_create is built 1:1 and in order from
+        # uploaded_attachments, and create_records_batch returns results in that
+        # same order, so on full success we can map record[i] -> file[i]
+        # positionally.
+        #
+        # We do NOT inspect attachment fields on the create response to decide
+        # whether to delete: Airtable frequently returns attachment fields as
+        # empty or omitted until it has asynchronously fetched the remote file,
+        # so that check would be falsy for every record even on full success,
+        # causing all intermediate files to be kept as false "orphans".
+        #
+        # The record count is the reliable gate: if Airtable accepted all
+        # records it returns exactly len(uploaded_attachments) entries. Any
+        # partial failure (failed batch, 200 with fewer records, or a whole
+        # batch dropped) reduces the count and triggers the 'keep all' path.
         if len(created_records) == len(uploaded_attachments):
-            for (file_path, _), record in zip(uploaded_attachments, created_records):
-                fields = record.get("fields", {}) if isinstance(record, dict) else {}
-                has_attachment = any(fields.get(name) for name in attachment_field_names)
-                if has_attachment:
-                    self.storage.delete_file(file_path)
-                else:
-                    logger.warning(
-                        f"Airtable record for {os.path.basename(file_path)} has no "
-                        f"attachment; keeping intermediate file."
-                    )
+            for file_path, _ in uploaded_attachments:
+                self.storage.delete_file(file_path)
         else:
             logger.warning(
                 f"Only {len(created_records)} of {len(uploaded_attachments)} records "
