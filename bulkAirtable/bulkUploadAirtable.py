@@ -54,8 +54,15 @@ class S3Storage(StorageBackend):
         try:
             filename = os.path.basename(file_path)
             self.s3.upload_file(file_path, self.bucket_name, filename)
-            url = f"https://{self.bucket_name}.s3.amazonaws.com/{filename}"
-            logger.info(f"Uploaded to S3: {url}")
+            # Presigned GET URL (1h) instead of a public URL: lets Airtable fetch
+            # the attachment after the batch create without making the object
+            # publicly readable (no public-bucket requirement / footgun).
+            url = self.s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.bucket_name, 'Key': filename},
+                ExpiresIn=3600,
+            )
+            logger.info(f"Uploaded to S3 (presigned, 1h): {filename}")
             return url
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
@@ -80,6 +87,8 @@ class GDriveStorage(StorageBackend):
             scopes=["https://www.googleapis.com/auth/drive.file"]
         )
         self.service = build('drive', 'v3', credentials=self.creds)
+        # Drive deletes by file id (not path), so remember the id from upload.
+        self._file_ids = {}
 
     def upload_file(self, file_path: str) -> str:
         try:
@@ -91,12 +100,25 @@ class GDriveStorage(StorageBackend):
                 fields='id'
             ).execute()
             file_id = file.get('id')
+            self._file_ids[file_path] = file_id
             url = f"https://drive.google.com/uc?id={file_id}"
             logger.info(f"Uploaded to GDrive: {url}")
             return url
         except Exception as e:
             logger.error(f"GDrive Upload Error: {e}")
             return None
+
+    def delete_file(self, file_path: str):
+        file_id = self._file_ids.get(file_path)
+        if not file_id:
+            logger.warning(f"No Drive file id tracked for {file_path}; skipping delete.")
+            return
+        try:
+            self.service.files().delete(fileId=file_id).execute()
+            self._file_ids.pop(file_path, None)
+            logger.info(f"Deleted from GDrive: {file_id}")
+        except Exception as e:
+            logger.error(f"GDrive Delete Error: {e}")
 
 
 class AirtableUploader:
@@ -158,16 +180,29 @@ class AirtableUploader:
             records_to_create.append({"fields": fields})
 
         logger.info(f"Creating {len(records_to_create)} records in Airtable...")
-        self.client.create_records_batch(records_to_create)
+        created_records = self.client.create_records_batch(records_to_create)
 
-        # 3. Validate (Optional - skipped for brevity but good to have)
-        # 4. Cleanup S3 if needed
-        # Note: If validation is needed, it should be done before cleanup.
-        # For now, we assume success if API returns 200 (checked in client).
-        
-        # Cleanup
+        # Only clean up intermediate storage for files whose attachment Airtable
+        # actually confirmed in the create response. If creation failed (or a
+        # record came back without its attachment), keep the intermediate file
+        # so nothing is lost.
+        confirmed_filenames = set()
+        for record in created_records or []:
+            fields = record.get("fields", {}) if isinstance(record, dict) else {}
+            for field_name in attachment_field_names:
+                for attachment in fields.get(field_name, []) or []:
+                    name = attachment.get("filename") if isinstance(attachment, dict) else None
+                    if name:
+                        confirmed_filenames.add(name)
+
         for file_path, _ in uploaded_attachments:
-            self.storage.delete_file(file_path)
+            if os.path.basename(file_path) in confirmed_filenames:
+                self.storage.delete_file(file_path)
+            else:
+                logger.warning(
+                    f"Airtable did not confirm attachment for "
+                    f"{os.path.basename(file_path)}; keeping intermediate file."
+                )
 
 
 def main():
