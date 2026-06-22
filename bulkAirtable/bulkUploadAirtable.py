@@ -4,6 +4,7 @@ Module for uploading files to Airtable via intermediate storage (S3 or Google Dr
 
 import os
 import json
+import uuid
 import logging
 import requests
 from time import sleep, time
@@ -49,25 +50,40 @@ class S3Storage(StorageBackend):
             aws_secret_access_key=secret_key
         )
         self.bucket_name = bucket_name
+        # Track every upload so retries of the same path do not orphan earlier
+        # objects by overwriting a single file_path -> key mapping.
+        self._uploads: list[tuple[str, str]] = []
 
     def upload_file(self, file_path: str) -> str:
         try:
             filename = os.path.basename(file_path)
-            self.s3.upload_file(file_path, self.bucket_name, filename)
-            url = f"https://{self.bucket_name}.s3.amazonaws.com/{filename}"
-            logger.info(f"Uploaded to S3: {url}")
+            key = f"{uuid.uuid4().hex}-{filename}"
+            self.s3.upload_file(file_path, self.bucket_name, key)
+            self._uploads.append((file_path, key))
+            url = self.s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.bucket_name, 'Key': key},
+                ExpiresIn=43200,
+            )
+            logger.info(f"Uploaded to S3 (presigned, 12h): {key}")
             return url
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
             return None
 
     def delete_file(self, file_path: str):
-        try:
-            filename = os.path.basename(file_path)
-            self.s3.delete_object(Bucket=self.bucket_name, Key=filename)
-            logger.info(f"Deleted from S3: {filename}")
-        except Exception as e:
-            logger.error(f"S3 Delete Error: {e}")
+        matching = [(fp, key) for fp, key in self._uploads if fp == file_path]
+        if not matching:
+            logger.warning(f"No S3 key tracked for {file_path}; skipping delete.")
+            return
+
+        for fp, key in matching:
+            try:
+                self.s3.delete_object(Bucket=self.bucket_name, Key=key)
+                self._uploads.remove((fp, key))
+                logger.info(f"Deleted from S3: {key}")
+            except Exception as e:
+                logger.error(f"S3 Delete Error: {e}")
 
 
 class GDriveStorage(StorageBackend):
@@ -80,6 +96,7 @@ class GDriveStorage(StorageBackend):
             scopes=["https://www.googleapis.com/auth/drive.file"]
         )
         self.service = build('drive', 'v3', credentials=self.creds)
+        self._file_ids = {}
 
     def upload_file(self, file_path: str) -> str:
         try:
@@ -91,12 +108,25 @@ class GDriveStorage(StorageBackend):
                 fields='id'
             ).execute()
             file_id = file.get('id')
+            self._file_ids[file_path] = file_id
             url = f"https://drive.google.com/uc?id={file_id}"
             logger.info(f"Uploaded to GDrive: {url}")
             return url
         except Exception as e:
             logger.error(f"GDrive Upload Error: {e}")
             return None
+
+    def delete_file(self, file_path: str):
+        file_id = self._file_ids.get(file_path)
+        if not file_id:
+            logger.warning(f"No Drive file id tracked for {file_path}; skipping delete.")
+            return
+        try:
+            self.service.files().delete(fileId=file_id).execute()
+            self._file_ids.pop(file_path, None)
+            logger.info(f"Deleted from GDrive: {file_id}")
+        except Exception as e:
+            logger.error(f"GDrive Delete Error: {e}")
 
 
 class AirtableUploader:
@@ -158,16 +188,21 @@ class AirtableUploader:
             records_to_create.append({"fields": fields})
 
         logger.info(f"Creating {len(records_to_create)} records in Airtable...")
-        self.client.create_records_batch(records_to_create)
+        created_records = self.client.create_records_batch(records_to_create)
 
-        # 3. Validate (Optional - skipped for brevity but good to have)
-        # 4. Cleanup S3 if needed
-        # Note: If validation is needed, it should be done before cleanup.
-        # For now, we assume success if API returns 200 (checked in client).
-        
-        # Cleanup
-        for file_path, _ in uploaded_attachments:
-            self.storage.delete_file(file_path)
+        # Clean up intermediate storage only when every uploaded file has a
+        # confirmed Airtable record. Airtable may return attachment fields as
+        # empty until it asynchronously fetches remote URLs, so the reliable
+        # gate here is the record count, not echoed attachment data.
+        if len(created_records) == len(uploaded_attachments):
+            for file_path, _ in uploaded_attachments:
+                self.storage.delete_file(file_path)
+        else:
+            logger.warning(
+                f"Only {len(created_records)} of {len(uploaded_attachments)} records "
+                f"were created; keeping all intermediate files (cannot map records "
+                f"to files safely)."
+            )
 
 
 def main():

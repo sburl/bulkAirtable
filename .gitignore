@@ -5,3 +5,5 @@
 *.log
 logs/
 aboutme.txt
+__pycache__/
+*.pyc
