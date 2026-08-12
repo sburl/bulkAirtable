@@ -51,12 +51,24 @@ Since this is a package, you can run the modules directly:
 Uploads a local folder to Airtable's attachment field via S3/GDrive.
 
 ```bash
-python -m bulkAirtable.upload
+python -m bulkAirtable.bulkUploadAirtable
+```
+
+From a source checkout, this can also be run directly:
+
+```bash
+python bulkAirtable/bulkUploadAirtable.py
 ```
 
 ### 2. Download Attachments
 Downloads attachments from Airtable to your local machine, organized by file type.
 
 ```bash
-python -m bulkAirtable.download
+python -m bulkAirtable.bulkDownloadAirtable
+```
+
+From a source checkout, this can also be run directly:
+
+```bash
+python bulkAirtable/bulkDownloadAirtable.py
 ```

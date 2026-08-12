@@ -9,7 +9,12 @@ import requests
 from time import sleep, time
 from dotenv import load_dotenv
 
-from .client import AirtableClient
+# Support both ``python -m bulkAirtable.bulkUploadAirtable`` and executing
+# this file directly from a source checkout.
+if __package__:
+    from .client import AirtableClient
+else:
+    from client import AirtableClient
 
 # Optional dependencies
 try:
