@@ -6,7 +6,13 @@ import os
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
-from .client import AirtableClient
+
+# Support both ``python -m bulkAirtable.bulkDownloadAirtable`` and executing
+# this file directly from a source checkout.
+if __package__:
+    from .client import AirtableClient
+else:
+    from client import AirtableClient
 
 def ensure_valid_directory(path):
     """
@@ -183,7 +189,7 @@ def main():
     
     # Simple CLI interface
     if not all([os.getenv("BASE_ID"), os.getenv("TABLE_ID"), os.getenv("AIRTABLE_TOKEN")]):
-        print("Error: environment variables BASE_ID, TABLE_ID, AIRTABLE_TOKEN are set.")
+        print("Error: environment variables BASE_ID, TABLE_ID, and AIRTABLE_TOKEN must be set.")
         return
 
     client = AirtableClient()
