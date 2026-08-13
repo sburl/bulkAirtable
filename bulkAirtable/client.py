@@ -209,7 +209,19 @@ class AirtableClient:
                 )
                 
                 if response.status_code == 200:
-                    results.extend(response.json().get("records", []))
+                    batch_records = response.json().get("records", [])
+                    if len(batch_records) < len(batch):
+                        logger.error(
+                            f"Batch {i // batch_size + 1}: expected {len(batch)} "
+                            f"records, got {len(batch_records)}; treating as failure."
+                        )
+                        if attempt < retries - 1:
+                            sleep(2 ** attempt)
+                            continue
+                        else:
+                            logger.error(f"Failed to create batch after {retries} attempts")
+                            break
+                    results.extend(batch_records)
                     logger.info(f"Created batch {i // batch_size + 1} ({len(batch)} records)")
                     break
                 elif response.status_code == 429:

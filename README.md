@@ -54,6 +54,11 @@ Uploads a local folder to Airtable's attachment field via S3/GDrive.
 python -m bulkAirtable.upload
 ```
 
+Upload safety notes:
+- S3 uploads use unique object keys and presigned 12-hour GET URLs, so the bucket does not need public read access.
+- Google Drive cleanup deletes the uploaded Drive file by its returned file ID, not by local filename.
+- Intermediate S3/Drive files are cleaned up only after Airtable confirms every uploaded file has a created record. If a batch fails or Airtable returns fewer records than requested, cleanup is skipped so files are not deleted prematurely.
+
 ### 2. Download Attachments
 Downloads attachments from Airtable to your local machine, organized by file type.
 
